@@ -8,6 +8,7 @@ module Bosh::Director
       @logger = Config.logger
       @broadcast_timeout = broadcast_timeout
       @reactor_loop = EmReactorLoop.new
+      @nats_rpc = Config.nats_rpc
     end
 
     def delete_arp_entries(vm_cid_to_exclude, ip_addresses)
@@ -19,7 +20,7 @@ module Bosh::Director
     end
 
     def sync_dns(instances, blobstore_id, sha1, version)
-      @logger.info("agent_broadcaster: sync_dns: sending to #{instances.length} agents #{instances.map(&:agent_id)}")
+      # @logger.info("agent_broadcaster: sync_dns: sending to #{instances.length} agents #{instances.map(&:agent_id)}")
 
       lock = Mutex.new
 
@@ -31,20 +32,22 @@ module Bosh::Director
       instance_to_request_id = {}
       pending = Set.new
 
+      start_time_sending = Time.now
       instances.each do |instance|
         pending.add(instance)
-        instance_to_request_id[instance] = agent_client(instance.agent_id,
+        agent_id = instance.agent_id
+        instance_to_request_id[instance] = agent_client(agent_id,
                                                         instance.name).sync_dns(blobstore_id, sha1, version) do |response|
           valid_response = (response['value'] == VALID_SYNC_DNS_RESPONSE)
 
           if valid_response
-            updated_rows = Models::AgentDnsVersion.where(agent_id: instance.agent_id).update(dns_version: version)
+            updated_rows = Models::AgentDnsVersion.where(agent_id: agent_id).update(dns_version: version)
 
             if updated_rows == 0
               begin
-                Models::AgentDnsVersion.create(agent_id: instance.agent_id, dns_version: version)
+                Models::AgentDnsVersion.create(agent_id: agent_id, dns_version: version)
               rescue Sequel::UniqueConstraintViolation
-                Models::AgentDnsVersion.where(agent_id: instance.agent_id).update(dns_version: version)
+                Models::AgentDnsVersion.where(agent_id: agent_id).update(dns_version: version)
               end
             end
           end
@@ -54,12 +57,13 @@ module Bosh::Director
               num_successful += 1
             else
               num_failed += 1
-              @logger.error("agent_broadcaster: sync_dns[#{instance.agent_id}]: received unexpected response #{response}")
+              @logger.error("agent_broadcaster: sync_dns[#{agent_id}]: received unexpected response #{response}")
             end
             pending.delete(instance)
           end
         end
       end
+      elapsed_time_sending = ((Time.now - start_time_sending) * 1000).ceil
 
       @reactor_loop.queue do
         # start timeout after current
@@ -79,24 +83,25 @@ module Bosh::Director
           pending_clone = pending.clone
         end
 
+        start_time_cancelling = Time.now
         unresponsive_agents = []
         pending_clone.each do |instance|
-          agent_client = agent_client(instance.agent_id, instance.name)
-          agent_client.cancel_sync_dns(instance_to_request_id[instance])
+          @nats_rpc.cancel_request(instance_to_request_id[instance])
 
           lock.synchronize do
             num_unresponsive += 1
           end
 
-          unresponsive_agents << instance.agent_id
+          # unresponsive_agents << instance.agent_id
         end
+        elapsed_time_cancelling = ((Time.now - start_time_cancelling) * 1000).ceil
         if num_unresponsive > 0
-          @logger.warn("agent_broadcaster: sync_dns: no response received for #{num_unresponsive} agent(s): [#{unresponsive_agents.join(', ')}]")
+          @logger.warn("agent_broadcaster: sync_dns: no response received for #{num_unresponsive} agent(s)")
         end
 
         elapsed_time = ((Time.now - start_time) * 1000).ceil
         lock.synchronize do
-          @logger.info("agent_broadcaster: sync_dns: attempted #{instances.length} agents in #{elapsed_time}ms (#{num_successful} successful, #{num_failed} failed, #{num_unresponsive} unresponsive)")
+          @logger.info("agent_broadcaster: sync_dns: attempted #{instances.length} agents in #{elapsed_time}ms, spent #{elapsed_time_sending}ms for sending and #{elapsed_time_cancelling}ms for cancelling (#{num_successful} successful, #{num_failed} failed, #{num_unresponsive} unresponsive)")
         end
       end
     end
