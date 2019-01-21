@@ -8,7 +8,6 @@ module Bosh::Director
       @logger = Config.logger
       @broadcast_timeout = broadcast_timeout
       @reactor_loop = EmReactorLoop.new
-      @nats_rpc = Config.nats_rpc
     end
 
     def delete_arp_entries(vm_cid_to_exclude, ip_addresses)
