@@ -32,7 +32,6 @@ module Bosh::Director
       instance_to_request_id = {}
       pending = Set.new
 
-      start_time_sending = Time.now
       instances.each do |instance|
         pending.add(instance)
         agent_id = instance[:fetched_agent_id]
@@ -63,7 +62,6 @@ module Bosh::Director
           end
         end
       end
-      elapsed_time_sending = ((Time.now - start_time_sending) * 1000).ceil
 
       @reactor_loop.queue do
         # start timeout after current
@@ -83,25 +81,25 @@ module Bosh::Director
           pending_clone = pending.clone
         end
 
-        start_time_cancelling = Time.now
         unresponsive_agents = []
         pending_clone.each do |instance|
-          @nats_rpc.cancel_request(instance_to_request_id[instance])
+          agent_id = instance[:fetched_agent_id]
+          agent_client = agent_client(agent_id, instance.name)
+          agent_client.cancel_sync_dns(instance_to_request_id[instance])
 
           lock.synchronize do
             num_unresponsive += 1
           end
 
-          unresponsive_agents << instance[:fetched_agent_id]
+          unresponsive_agents << agent_id
         end
-        elapsed_time_cancelling = ((Time.now - start_time_cancelling) * 1000).ceil
         if num_unresponsive > 0
-          @logger.warn("agent_broadcaster: sync_dns: no response received for #{num_unresponsive} agent(s)")
+          @logger.warn("agent_broadcaster: sync_dns: no response received for #{num_unresponsive} agent(s): [#{unresponsive_agents.join(', ')}]")
         end
 
         elapsed_time = ((Time.now - start_time) * 1000).ceil
         lock.synchronize do
-          @logger.info("agent_broadcaster: sync_dns: attempted #{instances.length} agents in #{elapsed_time}ms, spent #{elapsed_time_sending}ms for sending and #{elapsed_time_cancelling}ms for cancelling (#{num_successful} successful, #{num_failed} failed, #{num_unresponsive} unresponsive)")
+          @logger.info("agent_broadcaster: sync_dns: attempted #{instances.length} agents in #{elapsed_time}ms (#{num_successful} successful, #{num_failed} failed, #{num_unresponsive} unresponsive)")
         end
       end
     end
