@@ -83,7 +83,7 @@ module Bosh::Director
         unresponsive_agents = []
         pending_clone.each do |instance|
           agent_id = instance[:fetched_agent_id]
-          agent_client = agent_client(agent_id, instance.name)
+          agent_client = agent_client(agent_id, instance[:name])
           agent_client.cancel_sync_dns(instance_to_request_id[instance])
 
           lock.synchronize do
